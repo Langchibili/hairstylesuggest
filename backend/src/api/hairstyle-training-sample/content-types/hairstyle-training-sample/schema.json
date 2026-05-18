@@ -1,0 +1,87 @@
+{
+  "kind": "collectionType",
+  "collectionName": "hairstyle_training_samples",
+  "info": {
+    "singularName": "hairstyle-training-sample",
+    "pluralName": "hairstyle-training-samples",
+    "displayName": "Hairstyle Training Sample",
+    "description": "Pool of approved images for LoRA fine-tuning"
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "hairstyle": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::hairstyle.hairstyle"
+    },
+    "uploaded_by_user": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "plugin::users-permissions.user"
+    },
+    "r2_image_key": {
+      "type": "string",
+      "required": true,
+      "maxLength": 512
+    },
+    "cdn_url": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "style_label": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "category": {
+      "type": "enumeration",
+      "enum": [
+        "fade",
+        "braids",
+        "locs",
+        "afro",
+        "waves",
+        "beard",
+        "protective",
+        "custom"
+      ]
+    },
+    "extraction_status": {
+      "type": "enumeration",
+      "enum": [
+        "pending",
+        "extracted",
+        "failed",
+        "approved"
+      ],
+      "default": "pending"
+    },
+    "extracted_mask_key": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "style_embedding": {
+      "type": "json"
+    },
+    "quality_score": {
+      "type": "decimal"
+    },
+    "approved_for_training": {
+      "type": "boolean",
+      "default": false
+    },
+    "notes": {
+      "type": "text"
+    },
+    "approved_at": {
+      "type": "datetime"
+    },
+    "generation_result_ref": {
+      "type": "string",
+      "maxLength": 36,
+      "description": "ID of the generation_result this was auto-sourced from, if any"
+    }
+  }
+}

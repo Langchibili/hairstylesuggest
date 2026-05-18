@@ -1,0 +1,50 @@
+{
+  "kind": "collectionType",
+  "collectionName": "style_gen_sessions",
+  "info": {
+    "singularName": "style-gen-session",
+    "pluralName": "style-gen-sessions",
+    "displayName": "StyleGenSession",
+    "description": "A user's hairstyle generation session"
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "user": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "plugin::users-permissions.user"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "created",
+        "uploading",
+        "processing",
+        "partial",
+        "complete",
+        "failed"
+      ],
+      "default": "created",
+      "required": true
+    },
+    "source_images": {
+      "type": "json",
+      "default": []
+    },
+    "face_analysis": {
+      "type": "json"
+    },
+    "prompt_overrides": {
+      "type": "json"
+    },
+    "total_cost_usd": {
+      "type": "decimal"
+    },
+    "completed_at": {
+      "type": "datetime"
+    }
+  }
+}

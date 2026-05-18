@@ -1,0 +1,717 @@
+# hairstylesuggest AI — REVISED MASTER PLAN
+### Stack: React Native · Strapi · MySQL 8 · FastAPI · RunPod · Cloudflare R2/CDN
+### 6-Day AI-Assisted Build Strategy
+
+---
+
+## PART 1: STACK CHANGES & ARCHITECTURE OVERVIEW
+
+---
+
+### 1.1 Revised Technology Stack
+
+**Mobile:** React Native (Expo managed workflow)
+**Backend:** Strapi v4 (Node.js 18)
+**Database:** MySQL 8.0 (replaces PostgreSQL)
+**AI Service:** Python FastAPI
+**Job Queue:** MySQL table-based queue (replaces Redis/Bull — simpler, fewer moving parts)
+**Storage:** Cloudflare R2 (S3-compatible, zero egress cost)
+**GPU:** RunPod serverless (RTX 4090)
+**CDN:** Cloudflare (auto-served from R2)
+
+---
+
+### 1.2 Why MySQL Table Queue Instead of Redis/Bull
+
+A MySQL-based job queue uses a `jobs` table with a `status` column and SELECT FOR UPDATE SKIP LOCKED to claim jobs atomically. This eliminates Redis as a dependency entirely, reducing infrastructure complexity for a 6-day build. The trade-off is slightly lower throughput at very high concurrency — irrelevant at MVP scale. The AI service polls the MySQL jobs table every 3 seconds, claims a job by updating its status to `running`, processes it, then writes results back. Strapi polls the same table to report status to the mobile app.
+
+---
+
+### 1.3 Architecture Rule (Unchanged but Important)
+
+The FastAPI AI service and Strapi are completely separate processes. Strapi writes job rows to MySQL. The FastAPI service reads and processes them. They communicate only through the MySQL jobs table and a webhook call from FastAPI to Strapi when a job completes. They never call each other's internal functions. This separation is what makes the AI-assisted build strategy work — each system can be coded and tested independently.
+
+---
+
+### 1.4 High-Level Data Flow
+
+1. User captures 4 photos in the app
+2. App calls Strapi → creates session row, receives R2 presigned upload URLs
+3. App uploads images directly to Cloudflare R2
+4. App calls Strapi → confirms uploads → Strapi inserts a job row in MySQL with status = queued
+5. FastAPI job worker polls MySQL → claims job → downloads images from R2 → runs MediaPipe + BiSeNet on CPU → sends payload to RunPod
+6. RunPod runs FLUX + IP-Adapter + ControlNet → returns generated images as base64
+7. FastAPI upscales results → uploads to R2 → updates MySQL generation_results rows → calls Strapi webhook
+8. App polls Strapi every 5 seconds → receives CDN URLs as styles complete → renders previews
+9. User taps a style → app triggers focus render (3 angles) → same flow repeats for that one style
+10. User swipes the 3-angle set → 2.5D viewer interpolates between images
+
+---
+
+## PART 2: COMPLETE REVISED DATABASE SCHEMA (MySQL 8)
+
+---
+
+### 2.1 Table: users
+```
+id                  CHAR(36) PRIMARY KEY DEFAULT (UUID())
+email               VARCHAR(255) UNIQUE NOT NULL
+password_hash       VARCHAR(255) NOT NULL
+display_name        VARCHAR(100)
+subscription_tier   ENUM('free','pro','salon') DEFAULT 'free'
+monthly_session_count INT DEFAULT 0
+skin_tone_profile   JSON
+created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+```
+
+### 2.2 Table: sessions
+```
+id                  CHAR(36) PRIMARY KEY DEFAULT (UUID())
+user_id             CHAR(36) NOT NULL
+status              ENUM('created','uploading','processing','partial','complete','failed') DEFAULT 'created'
+source_images       JSON
+face_analysis       JSON
+prompt_overrides    JSON
+total_cost_usd      DECIMAL(8,4)
+created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+completed_at        DATETIME
+INDEX idx_user_id (user_id)
+INDEX idx_status (status)
+```
+
+### 2.3 Table: hairstyles
+```
+id                  CHAR(36) PRIMARY KEY DEFAULT (UUID())
+slug                VARCHAR(80) UNIQUE NOT NULL
+display_name        VARCHAR(120) NOT NULL
+category            ENUM('fade','braids','locs','afro','waves','beard','protective','custom')
+lora_checkpoint     VARCHAR(255)
+lora_weight         DECIMAL(3,2) DEFAULT 0.85
+base_prompt         TEXT
+negative_prompt     TEXT
+preview_image_url   VARCHAR(512)
+is_premium          TINYINT(1) DEFAULT 0
+sort_order          INT DEFAULT 0
+active              TINYINT(1) DEFAULT 1
+source_type         ENUM('catalog','user_uploaded') DEFAULT 'catalog'
+created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+```
+
+### 2.4 Table: jobs
+```
+id                  CHAR(36) PRIMARY KEY DEFAULT (UUID())
+session_id          CHAR(36) NOT NULL
+generation_result_id CHAR(36)
+type                ENUM('preview_batch','focus_render','style_extraction')
+status              ENUM('queued','running','complete','failed','retrying') DEFAULT 'queued'
+payload             JSON
+runpod_job_id       VARCHAR(100)
+attempt_count       SMALLINT DEFAULT 0
+error_message       TEXT
+queued_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+started_at          DATETIME
+completed_at        DATETIME
+INDEX idx_status_queued_at (status, queued_at)
+INDEX idx_session_id (session_id)
+```
+
+Note on SELECT FOR UPDATE SKIP LOCKED — the job worker query pattern:
+```sql
+START TRANSACTION;
+SELECT * FROM jobs
+  WHERE status = 'queued' AND attempt_count < 3
+  ORDER BY queued_at ASC
+  LIMIT 1
+  FOR UPDATE SKIP LOCKED;
+UPDATE jobs SET status = 'running', started_at = NOW() WHERE id = ?;
+COMMIT;
+```
+This is safe under concurrent workers with no Redis needed.
+
+### 2.5 Table: generation_results
+```
+id                  CHAR(36) PRIMARY KEY DEFAULT (UUID())
+session_id          CHAR(36) NOT NULL
+hairstyle_id        CHAR(36) NOT NULL
+render_tier         ENUM('preview','focus')
+angles              JSON
+identity_score      DECIMAL(4,3)
+generation_params   JSON
+gpu_seconds         DECIMAL(8,2)
+cost_usd            DECIMAL(8,4)
+user_rating         SMALLINT
+created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+INDEX idx_session_id (session_id)
+```
+
+### 2.6 Table: hairstyle_training_samples (NEW)
+```
+id                  CHAR(36) PRIMARY KEY DEFAULT (UUID())
+hairstyle_id        CHAR(36)
+uploaded_by_user_id CHAR(36)
+r2_image_key        VARCHAR(512) NOT NULL
+cdn_url             VARCHAR(512)
+style_label         VARCHAR(120)
+category            ENUM('fade','braids','locs','afro','waves','beard','protective','custom')
+extraction_status   ENUM('pending','extracted','failed','approved') DEFAULT 'pending'
+extracted_mask_key  VARCHAR(512)
+style_embedding     JSON
+quality_score       DECIMAL(3,2)
+approved_for_training TINYINT(1) DEFAULT 0
+notes               TEXT
+uploaded_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+approved_at         DATETIME
+INDEX idx_category (category)
+INDEX idx_approved (approved_for_training)
+```
+
+### 2.7 Table: custom_style_uploads (NEW — for user-uploaded reference hairstyle photos)
+```
+id                  CHAR(36) PRIMARY KEY DEFAULT (UUID())
+session_id          CHAR(36) NOT NULL
+user_id             CHAR(36) NOT NULL
+r2_image_key        VARCHAR(512) NOT NULL
+cdn_url             VARCHAR(512)
+extraction_job_id   CHAR(36)
+extracted_style_prompt TEXT
+extracted_mask_key  VARCHAR(512)
+status              ENUM('uploaded','extracting','ready','failed') DEFAULT 'uploaded'
+created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+INDEX idx_session_id (session_id)
+```
+
+---
+
+## PART 3: FULL API DESIGN
+
+---
+
+### 3.1 Strapi Custom Endpoints
+
+**Sessions**
+```
+POST   /api/sessions                          Create session, get R2 presigned URLs
+POST   /api/sessions/:id/confirm-uploads      Mark images uploaded, enqueue preview_batch job
+GET    /api/sessions/:id/status               Poll status + partial CDN URLs
+POST   /api/sessions/:id/focus/:hairstyleId   Trigger 3-angle focus render
+GET    /api/sessions/:id/results              Full result set
+```
+
+**Custom Style Upload (NEW)**
+```
+POST   /api/sessions/:id/custom-style         Upload reference hairstyle photo, get R2 presigned URL
+POST   /api/sessions/:id/custom-style/confirm Confirm upload, trigger style extraction job
+GET    /api/sessions/:id/custom-style/status  Poll extraction status + extracted prompt
+```
+
+**Hairstyle Catalog**
+```
+GET    /api/hairstyles                        Paginated catalog, filter by category
+GET    /api/hairstyles/:slug                  Single style detail
+```
+
+**Ratings & History**
+```
+POST   /api/ratings                           Submit star rating for a result
+GET    /api/users/me/history                  User's past sessions + thumbnails
+```
+
+**Training Data Pool (Admin/Upload)**
+```
+POST   /api/training-samples                  Upload hairstyle sample image (admin or pro user)
+GET    /api/training-samples                  List samples (admin only, with filters)
+PATCH  /api/training-samples/:id/approve      Admin approves sample for training
+```
+
+**Internal Webhooks (AI service → Strapi)**
+```
+POST   /internal/jobs/:id/complete            Job done, receive CDN URLs
+POST   /internal/jobs/:id/failed              Job failed, receive error message
+```
+
+### 3.2 FastAPI AI Service Endpoints (Internal Only)
+```
+POST   /process/preview-batch                 Claim and run a preview batch job
+POST   /process/focus-render                  Claim and run a focus render job
+POST   /process/style-extraction              Claim and run a custom style extraction job
+GET    /health                                Liveness probe
+GET    /metrics                               Cost, latency, queue depth metrics
+```
+
+---
+
+## PART 4: NEW FEATURE — CUSTOM HAIRSTYLE PHOTO UPLOAD & EXTRACTION
+
+---
+
+### 4.1 Feature Description
+
+A user can photograph or upload an image of someone else wearing a hairstyle they like. The system extracts the hairstyle from that image using segmentation and style analysis, then applies that extracted hairstyle to the user's own face using the same FLUX + IP-Adapter pipeline.
+
+This is distinct from the catalog — the user supplies the style reference, not the app. The output is treated as a single custom result alongside the catalog results.
+
+---
+
+### 4.2 Style Extraction Pipeline
+
+**Step 1 — Segmentation**
+BiSeNet runs on the reference image and extracts class 17 (hair) as an isolated mask. The masked hair region is cropped and saved as a separate R2 asset. This becomes the extracted_mask_key.
+
+**Step 2 — Style Description via Vision Model**
+The cropped hair region is sent to a vision-capable model (FLUX redux or a CLIP-based descriptor) to generate a text description of the hairstyle. This becomes the extracted_style_prompt. Example output: "medium length box braids, neatly parted down the center, smooth texture, dark brown color."
+
+**Step 3 — Prompt Injection**
+The extracted_style_prompt is used in place of the base_prompt from the hairstyles table. IP-Adapter FaceID still conditions on the user's face. ControlNet still conditions on head pose from the user's source photos. The only difference is the style descriptor comes from the extracted reference rather than the catalog.
+
+**Step 4 — Optional LoRA Matching**
+A fuzzy match is run between the extracted_style_prompt and the catalog's base_prompt fields. If similarity is above 0.75, the matching catalog LoRA is applied automatically. If no match, generation runs without a LoRA (still works, just slightly less sharp on style-specific textures).
+
+**Step 5 — Result Delivery**
+The result appears in the session's results alongside catalog styles, labeled "Your Custom Style." It is stored in generation_results with hairstyle_id pointing to a dynamically created hairstyles row with source_type = 'user_uploaded'.
+
+---
+
+### 4.3 UI Flow for Custom Upload
+
+The capture screen gets a new button: "Upload a style photo." This opens the device photo library (expo-image-picker). The user selects one image. The app uploads it to R2 via presigned URL and calls the confirm endpoint. A small card appears in the processing screen labeled "Extracting your custom style..." with a progress indicator. Once extraction completes, the custom style card joins the other style cards in the viewer. The user can swipe through it exactly like catalog styles.
+
+---
+
+## PART 5: HAIRSTYLE TRAINING DATA POOL
+
+---
+
+### 5.1 Architecture Philosophy
+
+The training pool exists now even if LoRA fine-tuning is not scheduled until V2. The reason is that collecting good training data requires time and user behavior you cannot replicate retroactively. Every generated session and every user-uploaded style photo is a potential training asset. The schema captures it all from day one.
+
+---
+
+### 5.2 Data Sources for the Pool
+
+**Source 1 — Admin-Uploaded Samples**
+Admin users can upload curated hairstyle photos via the Strapi admin panel. Each photo is tagged with category, style_label, and notes. These are the highest quality samples and go through a BiSeNet extraction pass automatically on upload to produce a clean hair mask.
+
+**Source 2 — User-Uploaded Reference Photos**
+When a user uploads a custom style photo (Section 4), with their consent a copy is added to hairstyle_training_samples with approved_for_training = 0 pending admin review. Admin reviews and approves. This is disclosed in the privacy policy and terms.
+
+**Source 3 — High-Rated Generation Results**
+When a generation_result receives a user_rating of 5, the system automatically creates a hairstyle_training_samples entry linking to that generated image. These are generated images, not photos — but they are excellent training material for LoRA fine-tuning because they already have clean hair textures and no background clutter.
+
+---
+
+### 5.3 Training Sample Admin Panel
+
+Built inside Strapi admin using the existing content manager. Admin can:
+- Filter samples by category, extraction_status, approved_for_training
+- View the original image and extracted mask side by side
+- Edit style_label and category
+- Approve or reject for training
+- Export approved samples as a zip (for use in LoRA training scripts)
+
+No custom admin UI is needed for MVP — Strapi's built-in content manager handles this. A custom admin page for the side-by-side image comparison view is a V2 task.
+
+---
+
+### 5.4 Training Pool → LoRA Pipeline (Future)
+
+When enough approved samples exist per style (target: 80-150 per category), a LoRA fine-tuning run is triggered manually using the FLUX LoRA training script on a rented A100 instance. The resulting checkpoint is uploaded to the RunPod Docker image and the lora_checkpoint field in the hairstyles table is updated. No app update required — the checkpoint is baked into the next RunPod image build.
+
+---
+
+## PART 6: COST MODEL WITH REVISED STACK
+
+---
+
+### 6.1 Cost Per Session
+
+```
+Preview batch (10 front renders)     10 × RunPod RTX 4090              $0.08
+Focus render (3 angles, 1 style)     3 × RunPod RTX 4090               $0.025
+Custom style extraction              1 × BiSeNet CPU + vision call      $0.003
+MediaPipe + BiSeNet CPU              ~1.5 min @ $0.02/hr                $0.0005
+ESRGAN upscaling (13 images)         13 × 0.3s GPU                     $0.009
+R2 storage (13 images @ 2MB avg)     26MB @ $0.015/GB/month            $0.0004
+R2 egress                            Free                               $0.00
+Strapi VPS amortised                 $28/month / 1000 sessions          $0.028
+MySQL (shared with Strapi VPS)       $0 additional                      $0.00
+Total estimated                                                         ~$0.145/session
+```
+
+Eliminating Redis saves approximately $15-25/month on infrastructure. MySQL removes another $0/month since it runs on the same VPS as Strapi. The revised stack is cheaper than the original by about $0.03/session.
+
+---
+
+## PART 7: 6-DAY BUILD PLAN WITH AI CODE GENERATION STRATEGY
+
+---
+
+### 7.1 Core Principle: System-First, Integration-Last
+
+The only way to build this in 6 days with AI assistance is to treat every system as a completely isolated unit with a defined input/output contract. You do not write integration code until each unit works independently. AI code generators produce their best output when given a single, well-bounded system with clear inputs, outputs, and no assumed shared state with other systems.
+
+Each system below can be handed to an AI code generator as a standalone prompt. You then test it in isolation, then wire it to adjacent systems.
+
+---
+
+### 7.2 The 8 Independently Codable Systems
+
+**System 1: MySQL Schema + Migrations**
+What it is: All CREATE TABLE statements, indexes, seed data for 10 hairstyles, and a migration runner script.
+Input to AI: The full schema from Part 2 of this document.
+Output expected: A single SQL file with all tables, a seed.sql with 10 hairstyle rows, and a Node.js script that runs them against a MySQL 8 instance.
+Dependencies: None. This is the foundation. Do this first, on its own.
+Test: Run migrations against a fresh MySQL 8 Docker container, verify all tables exist, query the hairstyles seed data.
+
+**System 2: Strapi Backend (Auth + Sessions + Jobs)**
+What it is: Strapi configured for MySQL, custom content types, custom API controllers for sessions, jobs, training samples, and webhook endpoints.
+Input to AI: The API design from Part 3, the schema from Part 2, and the instruction that Strapi uses MySQL via the mysql2 provider.
+Output expected: A working Strapi project with: all content types created, all custom routes registered, session creation endpoint returning presigned R2 URLs, job insertion logic using MySQL directly (not Redis), webhook endpoints for AI service callbacks.
+Dependencies: System 1 must be running (MySQL with tables).
+Test: Use a REST client (Bruno or Postman) to: register a user, log in, create a session, get presigned URLs back, confirm uploads, verify job row appears in MySQL.
+AI prompt tip: Give the AI one controller at a time. Start with sessions controller, test it, then jobs controller, then training samples. Do not ask for all controllers in one prompt.
+
+**System 3: Cloudflare R2 Upload Module**
+What it is: A standalone Node.js module (used by Strapi) that generates presigned PUT URLs for R2, and a Python module (used by FastAPI) that uploads files to R2 using boto3.
+Input to AI: R2 bucket name, endpoint URL format, required CORS config, the list of file types and size limits.
+Output expected: Two files — r2_uploader.js (Node.js, used in Strapi controllers to generate presigned URLs) and r2_uploader.py (Python, used by FastAPI to upload processed results).
+Dependencies: Cloudflare R2 bucket must exist and credentials must be available.
+Test: Node.js module — call it, get a URL back, use curl to PUT a file to that URL, verify it appears in R2 dashboard. Python module — run a script that uploads a test image to R2, verify CDN URL is accessible.
+
+**System 4: FastAPI Job Worker (The Queue Poller)**
+What it is: The FastAPI application with a background worker that polls the MySQL jobs table using SELECT FOR UPDATE SKIP LOCKED, claims jobs, dispatches to the appropriate processing function, handles retries, and calls the Strapi webhook on completion.
+Input to AI: The jobs table schema, the SELECT FOR UPDATE SKIP LOCKED query pattern, the job types (preview_batch, focus_render, style_extraction), the webhook URL format, the retry logic (max 3 attempts, exponential backoff).
+Output expected: A FastAPI app with: a background asyncio task that polls MySQL every 3 seconds, a dispatcher that routes each job type to a handler function (stubs are fine for now), a webhook caller that POSTs to Strapi on completion or failure.
+Dependencies: System 1 (MySQL running), System 3 (R2 credentials).
+Test: Insert a row manually into the jobs table with status = queued. Start the FastAPI worker. Watch it claim the job (status changes to running) and call the webhook stub. Verify retry logic by making the handler throw an error three times.
+
+**System 5: RunPod Pipeline (The GPU Handler)**
+What it is: The RunPod serverless Docker image with handler.py that accepts a JSON payload, runs FLUX + IP-Adapter FaceID + ControlNet, returns base64-encoded PNG images.
+Input to AI: The handler.py template from Appendix B of the original document, the generation parameters (steps=28, guidance_scale=3.5, resolution=768x1024), the IP-Adapter face_strength range, the prompt assembly format.
+Output expected: A complete handler.py, a requirements.txt for the Docker image, and a Dockerfile that starts from the RunPod PyTorch base image, downloads model weights, and sets up the handler.
+Dependencies: RunPod account with a funded wallet, access to FLUX.1-dev weights.
+Test: Build the Docker image locally (CPU-only test without model weights), then push to RunPod, run a test job via the RunPod dashboard with a sample payload, verify base64 PNG comes back.
+Note: This system takes the longest to debug because GPU cold starts are slow. Budget a full day for this system alone within your 6-day plan.
+
+**System 6: Face Analysis + Prompt Builder (Python)**
+What it is: Two Python modules — face_analysis.py (MediaPipe + BiSeNet) and prompt_builder.py (assembles the full FLUX prompt from face analysis output + hairstyle row data).
+Input to AI: The MediaPipe landmark list, the BiSeNet class list (especially classes 1, 13, 17), the Fitzpatrick-to-prompt mapping table, the prompt assembly order from Part 3 of this document.
+Output expected: face_analysis.py that takes an image path, returns a dict with head_pose (yaw, pitch, roll), skin_tone_hex, skin_tone_fitzpatrick, hair_mask_path, face_bbox. prompt_builder.py that takes that dict + a hairstyle dict and returns positive_prompt and negative_prompt strings.
+Dependencies: None — these are pure Python, no network calls.
+Test: Run against 5 test images from your own phone camera. Print the dict output. Verify head_pose values are sensible (front photo should have yaw near 0). Verify skin_tone classification is correct for different people.
+
+**System 7: Style Extraction Module (Python — NEW Feature)**
+What it is: A Python module that takes a reference hairstyle image, extracts the hair region using BiSeNet, generates a text description of the extracted style using a vision model, and returns an extracted_style_prompt string plus the path to the isolated hair mask image.
+Input to AI: The BiSeNet class map (class 17 = hair), the task description (extract hair region, generate text descriptor), the expected output format.
+Output expected: style_extractor.py with two functions — extract_hair_mask(image_path) → returns mask_image_path, and describe_hairstyle(mask_image_path) → returns a text string describing the style.
+Dependencies: System 6 (shares BiSeNet model loading code).
+Test: Run against 10 celebrity hairstyle photos. Verify the mask isolates only the hair. Read the text description and verify it is plausible.
+
+**System 8: React Native App**
+What it is: The mobile frontend — all screens, navigation, API client, 2.5D viewer.
+Input to AI: Screen-by-screen, one screen at a time (see below).
+Dependencies: System 2 must be running (Strapi API live), System 3 (R2 working).
+Test: Each screen tested individually in Expo Go before wiring navigation between them.
+
+---
+
+### 7.3 6-Day Build Schedule
+
+**Day 1 — Foundation (Systems 1, 2, 3)**
+
+Morning:
+- Provision VPS (DigitalOcean $24/month, Ubuntu 22). Install MySQL 8, Node.js 18.
+- Run System 1 migrations. Verify all tables.
+- Create Cloudflare R2 bucket. Set CORS policy.
+
+Afternoon:
+- Scaffold Strapi. Configure MySQL provider. Create content types using Strapi admin UI (faster than code for content types).
+- Hand System 2 to AI: "Write the custom Strapi controller for sessions. Here is the MySQL schema and here is what the endpoint must return." Test sessions controller.
+- Hand System 3 to AI: "Write r2_uploader.js for Strapi and r2_uploader.py for FastAPI." Test both.
+
+End of Day 1 checkpoint: You can create a session via REST client and get presigned R2 URLs back. You can upload a file to R2 via those URLs.
+
+**Day 2 — AI Service Foundation (Systems 4, 6)**
+
+Morning:
+- Scaffold FastAPI project. Install mediapipe, opencv, biSeNet dependencies.
+- Hand System 6 to AI: "Write face_analysis.py and prompt_builder.py with these exact specifications." Run against test images.
+
+Afternoon:
+- Hand System 4 to AI: "Write a FastAPI app with a MySQL polling job worker. Here is the schema, here is the SELECT FOR UPDATE SKIP LOCKED query, here is the webhook format."
+- Wire face_analysis and prompt_builder into the job worker's preview_batch handler stub.
+- Test: Insert a job manually. Watch the worker claim it and run face analysis on a test image. Verify webhook call fires.
+
+End of Day 2 checkpoint: The job worker is polling MySQL, claiming jobs, running face analysis, and calling back to Strapi. No GPU yet — handlers return stub results.
+
+**Day 3 — RunPod Pipeline (System 5)**
+
+This is the hardest day. Dedicate the full day to System 5.
+
+Morning:
+- Hand handler.py to AI: "Write a RunPod serverless handler that accepts this JSON payload format and runs FLUX + IP-Adapter FaceID + ControlNet. Here are the generation parameters."
+- Write the Dockerfile. Build locally (without model weights — just verify it builds).
+
+Afternoon:
+- Push Docker image to RunPod. Download and bake FLUX weights. This takes 2-3 hours first time.
+- Run first test generation from RunPod dashboard. Debug until you get a base64 PNG back.
+- Wire runpod_client.py (hand to AI: "Write an async Python client that POSTs to a RunPod serverless endpoint and polls for completion") into the job worker.
+
+End of Day 3 checkpoint: End-to-end pipeline works. Session created → job queued → worker picks up → RunPod generates → result comes back → webhook fires. Test with real faces and real styles.
+
+**Day 4 — Style Extraction + Training Pool (System 7 + Training Tables)**
+
+Morning:
+- Hand System 7 to AI: "Write style_extractor.py using BiSeNet for hair mask extraction and a vision model for style description."
+- Add style_extraction job type to the FastAPI worker dispatcher.
+- Test with 10 reference hairstyle photos. Tune BiSeNet thresholds.
+
+Afternoon:
+- Wire custom_style_uploads flow into Strapi: endpoint to get presigned URL for reference photo, confirm endpoint that inserts job row with type = style_extraction.
+- Verify the full custom upload flow: upload reference photo → job queued → worker extracts style → extracted_style_prompt written back to custom_style_uploads row → Strapi webhook fires.
+- Hand AI: "Write the training samples Strapi content type controller with these endpoints." Verify admin upload works.
+
+End of Day 4 checkpoint: Custom hairstyle photo upload works end-to-end. Training sample upload works. Both store data in MySQL correctly.
+
+**Day 5 — React Native App (System 8)**
+
+Hand each screen to AI as a separate prompt. Sequence:
+
+Prompt 1: "Write a React Native Expo auth flow with login and register screens. The API base URL is X. Use expo-secure-store for JWT storage. Use React Query for API calls."
+
+Prompt 2: "Write a React Native guided photo capture screen using expo-camera. It should capture 4 photos in sequence (front, left, right, top-down). Show an SVG head outline overlay. After capture, show a review screen with 4 thumbnails."
+
+Prompt 3: "Write a React Native screen that uploads images to presigned R2 URLs using expo-file-system and then polls a status endpoint every 5 seconds. Display each hairstyle preview card as it arrives."
+
+Prompt 4: "Write a React Native 2.5D viewer component using react-native-reanimated v3 and react-native-gesture-handler. It interpolates between three images (left angle, front, right angle) based on horizontal swipe. Here is the interpolation algorithm: [paste from Part 3 of this document]."
+
+Prompt 5: "Write a React Native screen that shows the 2.5D viewer component and a horizontal scrollable list of hairstyle thumbnail cards at the bottom. Tapping a card switches the active style in the viewer. Add a custom style upload button that opens the photo library."
+
+Wire navigation between screens. Add React Query client setup and Zustand stores.
+
+End of Day 5 checkpoint: You can run the app on a real device, log in, capture photos, see the processing screen, and interact with the 2.5D viewer.
+
+**Day 6 — Integration Testing, Error Handling, Polish**
+
+Morning:
+- Run full end-to-end test 10 times with different faces and styles.
+- Add error states to every screen (network failure, generation failure, partial results).
+- Add retry logic to the job worker (already scaffolded in System 4 — now verify it works by intentionally breaking a job).
+
+Afternoon:
+- Test custom style upload flow end-to-end on device.
+- Test training sample upload via Strapi admin.
+- Fix the top 5 bugs found during morning testing.
+- Deploy everything to production: Strapi + FastAPI on VPS, push final RunPod Docker image.
+- Connect Sentry to both mobile and backend.
+
+End of Day 6 checkpoint: The app is functional end-to-end on a production server. You can share a TestFlight or APK with beta testers.
+
+---
+
+### 7.4 How to Write Effective AI Code Generation Prompts
+
+**Rule 1 — Give the AI the exact schema.**
+Do not say "create a database model for sessions." Paste the full CREATE TABLE statement and say "use this schema exactly." AI will not invent columns you did not ask for.
+
+**Rule 2 — Specify one system per prompt.**
+Never ask for System 2 and System 4 in the same prompt. The AI loses coherence on large cross-system prompts. Keep each prompt scoped to one file or one module.
+
+**Rule 3 — Specify the integration contract, not the internals.**
+For each system, tell the AI what goes in and what comes out. Example: "This function takes {hairstyle_slug, face_analysis_json} and returns {positive_prompt, negative_prompt} as strings." The AI fills in the internals. You verify the output matches the contract.
+
+**Rule 4 — Always include error handling in the prompt.**
+Add "include try/except blocks for all network calls and database operations, log errors with loguru, re-raise with a descriptive message" to every Python prompt and "add error boundaries and loading states to every component" to every React Native prompt.
+
+**Rule 5 — Test before moving to the next system.**
+If a system does not pass its checkpoint, do not start the next system. Carrying broken dependencies into dependent systems creates debugging problems that cost more time than the delay.
+
+**Rule 6 — Use AI for refactoring after the fact, not during.**
+Write messy working code first. Once a system passes its checkpoint, hand the working code back to AI and say "refactor this for readability and add comments." This is faster than trying to get perfect code on the first pass.
+
+---
+
+### 7.5 What to Pre-Build Before Day 1
+
+Before the 6-day clock starts:
+
+- RunPod account funded with at least $50
+- Cloudflare account with R2 bucket created and CORS configured
+- VPS provisioned with MySQL 8 and Node.js 18 installed
+- GitHub repository created with /mobile, /backend, /ai-service folders
+- 20 test photos collected across different skin tones (Fitzpatrick II through VI) and genders for pipeline testing
+- 10 reference hairstyle photos for style extraction testing
+- .env template files written for all three services with placeholder values
+
+---
+
+## PART 8: FULL HAIRSTYLE CATALOG (INITIAL 10 + CATEGORY STRUCTURE)
+
+---
+
+### 8.1 Initial Catalog
+
+```
+#   Slug                    Display Name              Category     Premium
+1   low-fade-lineup         Low Fade + Lineup         fade         No
+2   mid-fade-clean          Mid Fade Clean Cut        fade         No
+3   high-top-fade           High Top Fade             fade         No
+4   box-braids-medium       Medium Box Braids         braids       No
+5   cornrows-straight-back  Straight Back Cornrows    braids       No
+6   short-locs-starter      Starter Locs              locs         Yes
+7   medium-locs-neat        Medium Dreadlocks         locs         Yes
+8   afro-medium-shaped      Shaped Medium Afro        afro         No
+9   bald-fade-beard         Bald Fade + Beard         fade         Yes
+10  twists-short            Short Two-Strand Twists   protective   Yes
+```
+
+### 8.2 Category Structure for Future Expansion
+- fade: low, mid, high, skin, taper, drop, burst, bald, temp
+- braids: box braids, cornrows, goddess braids, knotless braids, fulani braids
+- locs: starter, short, medium, long, retwist, freeform, sisterlocs
+- afro: TWA, medium, large, shaped, blowout
+- waves: 360 waves, finger waves
+- beard: low fade with beard, high fade with beard, full beard trim
+- protective: twists, bantu knots, flat twists, crochet braids
+- custom: user-uploaded styles (source_type = user_uploaded)
+
+---
+
+## PART 9: REVISED ENVIRONMENT VARIABLES
+
+---
+
+### Strapi (.env)
+```
+DATABASE_CLIENT=mysql
+DATABASE_HOST=localhost
+DATABASE_PORT=3306
+DATABASE_NAME=hairstylesuggest
+DATABASE_USERNAME=hairstylesuggest_user
+DATABASE_PASSWORD=your_password
+JWT_SECRET=64_character_random_string
+REFRESH_TOKEN_SECRET=64_character_random_string
+R2_ACCOUNT_ID=your_account_id
+R2_ACCESS_KEY_ID=your_access_key
+R2_SECRET_ACCESS_KEY=your_secret_key
+R2_BUCKET_NAME=hairstylesuggest-assets
+R2_PUBLIC_URL=https://pub-your-id.r2.dev
+AI_SERVICE_URL=http://localhost:8000
+INTERNAL_SERVICE_KEY=64_character_shared_secret
+```
+
+### FastAPI AI Service (.env)
+```
+DATABASE_HOST=localhost
+DATABASE_PORT=3306
+DATABASE_NAME=hairstylesuggest
+DATABASE_USER=hairstylesuggest_user
+DATABASE_PASSWORD=your_password
+RUNPOD_API_KEY=your_runpod_key
+RUNPOD_ENDPOINT_ID=your_endpoint_id
+R2_ACCESS_KEY_ID=your_access_key
+R2_SECRET_ACCESS_KEY=your_secret_key
+R2_BUCKET_NAME=hairstylesuggest-assets
+R2_ENDPOINT_URL=https://account_id.r2.cloudflarestorage.com
+CDN_BASE_URL=https://pub-your-id.r2.dev
+STRAPI_WEBHOOK_URL=http://localhost:1337/internal/jobs
+INTERNAL_SERVICE_KEY=64_character_shared_secret
+MAX_CONCURRENT_JOBS=3
+JOB_POLL_INTERVAL_SECONDS=3
+```
+
+### React Native (.env via expo-constants)
+```
+EXPO_PUBLIC_API_BASE_URL=https://your-domain.com
+EXPO_PUBLIC_SENTRY_DSN=your_sentry_dsn
+```
+
+---
+
+## PART 10: RISK REGISTER (REVISED FOR 6-DAY BUILD)
+
+---
+
+```
+Risk                              Probability  Impact   Mitigation
+RunPod Docker image build fails   High         High     Allocate all of Day 3. Have a fallback:
+                                                        test with Replicate API first to validate
+                                                        the FLUX pipeline, then move to RunPod.
+
+MySQL queue race condition         Medium       Medium   Use SELECT FOR UPDATE SKIP LOCKED exactly
+                                                        as specified. Test with 2 concurrent workers
+                                                        before Day 4.
+
+Style extraction produces bad     High         Medium   Stub the vision description call with a
+text descriptions                                        simple CLIP-based descriptor first. Refine
+                                                        the description quality in V2.
+
+AI-generated code has broken      High         Medium   Test each system's checkpoint before moving
+integration contracts                                    on. Never assume AI output is correct.
+
+Identity preservation fails on    Medium       Critical Test on 5 people with Fitzpatrick IV-VI
+very dark skin tones                                     on Day 3. Adjust IP-Adapter face_strength
+                                                        to 0.85-0.90 for darker tones.
+
+6-day timeline slips              High         Medium   Day 4 (training pool) is the lowest
+                                                        priority. If falling behind, skip System 7
+                                                        and Day 4 entirely. The training pool is
+                                                        future-facing and does not affect MVP
+                                                        functionality. Ship without it.
+```
+
+---
+
+## PART 11: WHAT TO CUT IF FALLING BEHIND
+
+---
+
+Prioritize in this order. Cut from the bottom up.
+
+1. Core AI pipeline (RunPod + face analysis + prompt builder) — cannot cut
+2. Strapi sessions + jobs + auth API — cannot cut
+3. React Native capture screen + processing screen — cannot cut
+4. React Native 2.5D viewer — cannot cut
+5. Custom style photo upload (NEW feature) — cut if behind on Day 4
+6. Training data pool upload + admin panel — cut entirely if needed
+7. Focus render (3-angle) — reduce to 2 angles if GPU time is a constraint
+8. Rating system — cut for MVP, add in week 2
+9. Session history screen — cut for MVP
+10. Onboarding flow — cut for MVP, show capture screen immediately after login
+
+The non-negotiable core is: login → capture photos → see AI-generated previews → swipe through styles. Everything else is addable post-launch.
+
+---
+
+## PART 12: POST-LAUNCH ITERATION PLAN
+
+---
+
+**Week 2 (Days 7-14)**
+- Fix top bugs reported by beta testers
+- Add rating system
+- Add session history screen
+- Tune prompts for lowest-rated styles based on user feedback
+- Enable custom style upload if it was cut
+
+**Week 3-4**
+- Begin curating training samples from high-rated generations and admin uploads
+- Add beard + hairstyle combination styles
+- Add share button (generate shareable image card with style name)
+- Add push notification when generation completes in background
+
+**Month 2**
+- First LoRA fine-tuning run on collected training data (target: 3 styles with 80+ approved samples each)
+- Stripe integration for Pro tier
+- B2B barber dashboard planning begins
+- Expand catalog to 25 styles using existing pipeline (no infrastructure changes needed)
+
+**Month 3-4**
+- Region-specific style packs (West African, East African, South African)
+- Real-time AR lite preview using on-device mask overlay (no GPU, fast, for barbershop consultation context)
+- LoRA marketplace architecture design
+
+---
+
+*End of document. Every section above is actionable. Start with Part 7.5 (pre-build checklist) before Day 1.*

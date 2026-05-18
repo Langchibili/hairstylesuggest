@@ -1,0 +1,78 @@
+{
+  "kind": "collectionType",
+  "collectionName": "hairstyles",
+  "info": {
+    "singularName": "hairstyle",
+    "pluralName": "hairstyles",
+    "displayName": "Hairstyle",
+    "description": "Catalog of available hairstyles"
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "slug": {
+      "type": "uid",
+      "targetField": "display_name",
+      "required": true
+    },
+    "display_name": {
+      "type": "string",
+      "required": true,
+      "maxLength": 120
+    },
+    "category": {
+      "type": "enumeration",
+      "enum": [
+        "fade",
+        "braids",
+        "locs",
+        "afro",
+        "waves",
+        "beard",
+        "protective",
+        "custom"
+      ],
+      "required": true
+    },
+    "lora_checkpoint": {
+      "type": "string",
+      "maxLength": 255
+    },
+    "lora_weight": {
+      "type": "decimal",
+      "default": 0.85
+    },
+    "base_prompt": {
+      "type": "text"
+    },
+    "negative_prompt": {
+      "type": "text"
+    },
+    "preview_image_url": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "is_premium": {
+      "type": "boolean",
+      "default": false
+    },
+    "sort_order": {
+      "type": "integer",
+      "default": 0
+    },
+    "active": {
+      "type": "boolean",
+      "default": true
+    },
+    "source_type": {
+      "type": "enumeration",
+      "enum": [
+        "catalog",
+        "user_uploaded"
+      ],
+      "default": "catalog"
+    }
+  }
+}

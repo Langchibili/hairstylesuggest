@@ -1,0 +1,57 @@
+{
+  "kind": "collectionType",
+  "collectionName": "custom_style_uploads",
+  "info": {
+    "singularName": "custom-style-upload",
+    "pluralName": "custom-style-uploads",
+    "displayName": "Custom Style Upload",
+    "description": "User-uploaded reference hairstyle photos for custom style extraction"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "session": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::style-gen-session.style-gen-session"
+    },
+    "user": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "plugin::users-permissions.user"
+    },
+    "r2_image_key": {
+      "type": "string",
+      "required": true,
+      "maxLength": 512
+    },
+    "cdn_url": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "extraction_job_id": {
+      "type": "string",
+      "maxLength": 36
+    },
+    "extracted_style_prompt": {
+      "type": "text"
+    },
+    "extracted_mask_key": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": [
+        "uploaded",
+        "extracting",
+        "ready",
+        "failed"
+      ],
+      "default": "uploaded",
+      "required": true
+    }
+  }
+}
