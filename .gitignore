@@ -1,1 +1,19 @@
 project-plan.txt
+collect-source-code.js
+
+*.zip
+*.txt
+backend/node_modules
+backend/src-old
+backend-err
+backend-old-stuff
+backend/.strapi
+backend/.strapi-updater.json
+backend/build
+backend/.env
+backend/config-old
+
+yarn-error.log
+
+# testing
+/coverage

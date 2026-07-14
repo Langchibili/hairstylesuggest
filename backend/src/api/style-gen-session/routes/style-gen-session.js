@@ -15,7 +15,7 @@ module.exports = {
             path: '/sessions',
             handler: 'style-gen-session.create',
             config: {
-                auth: true,
+                auth: {},
                 policies: [],
                 middlewares: [],
             },
@@ -24,25 +24,25 @@ module.exports = {
             method: 'POST',
             path: '/sessions/:id/confirm-uploads',
             handler: 'style-gen-session.confirmUploads',
-            config: { auth: true, policies: [] },
+            config: { auth: {}, policies: [] },
         },
         {
             method: 'GET',
             path: '/sessions/:id/status',
             handler: 'style-gen-session.getStatus',
-            config: { auth: true, policies: [] },
+            config: { auth: {}, policies: [] },
         },
         {
             method: 'POST',
             path: '/sessions/:id/focus/:hairstyleId',
             handler: 'style-gen-session.triggerFocusRender',
-            config: { auth: true, policies: [] },
+            config: { auth: {}, policies: [] },
         },
         {
             method: 'GET',
             path: '/sessions/:id/results',
             handler: 'style-gen-session.getResults',
-            config: { auth: true, policies: [] },
+            config: { auth: {}, policies: [] },
         },
 
         // ── User history (lives here to reuse session controller context) ──
@@ -50,7 +50,7 @@ module.exports = {
             method: 'GET',
             path: '/users/me/history',
             handler: 'style-gen-session.getUserHistory',
-            config: { auth: true, policies: [] },
+            config: { auth: {}, policies: [] },
         },
     ],
 };

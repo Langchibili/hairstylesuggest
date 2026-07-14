@@ -8,14 +8,15 @@
     "description": "AI generation job queue"
   },
   "options": {
-    "draftAndPublish": true
+    "draftAndPublish": false
   },
   "pluginOptions": {},
   "attributes": {
-    "style-gen-session": {
+    "session": {
       "type": "relation",
       "relation": "manyToOne",
-      "target": "api::style-gen-session.style-gen-session"
+      "target": "api::style-gen-session.style-gen-session",
+      "inversedBy": "jobs"
     },
     "generation_result_id": {
       "type": "string",

@@ -1,0 +1,30 @@
+{
+  "name": "hairstylesuggest-backend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "HairstyleSuggest AI - Strapi Backend",
+  "scripts": {
+    "develop": "strapi develop",
+    "start": "strapi start",
+    "build": "strapi build",
+    "strapi": "strapi"
+  },
+  "dependencies": {
+    "@strapi/strapi": "4.25.0",
+    "@strapi/plugin-users-permissions": "4.25.0",
+    "@strapi/plugin-i18n": "4.25.0",
+    "better-sqlite3": "8.6.0",
+    "mysql2": "3.9.7",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/s3-request-presigner": "^3.600.0",
+    "axios": "^1.7.2",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {},
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0 <=20.x.x",
+    "npm": ">=6.0.0"
+  }
+}

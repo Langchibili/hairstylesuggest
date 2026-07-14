@@ -16,13 +16,29 @@ module.exports = createCoreController(
             const user = ctx.state.user;
             if (!user) return ctx.unauthorized();
 
-            // Only admin or pro users can upload training samples
-            const isAdmin = user.role?.type === 'authenticated' || user.role?.name === 'Admin';
-            if (!isAdmin && user.subscription_tier === 'free') {
-                return ctx.forbidden('Only Pro or Salon tier users can upload training samples.');
+            // FIX: was checking role.type === 'authenticated' which is TRUE for
+            // every authenticated user. Now correctly checks for administrator role
+            // OR pro/salon subscription tier.
+            const isAdminRole =
+                user.role?.type === 'administrator' ||
+                user.role?.name === 'Admin' ||
+                user.role?.name === 'Super Admin';
+            const isProOrSalon =
+                user.subscription_tier === 'pro' || user.subscription_tier === 'salon';
+
+            if (!isAdminRole && !isProOrSalon) {
+                return ctx.forbidden(
+                    'Only Admin, Pro, or Salon tier users can upload training samples.'
+                );
             }
 
-            const { category, style_label, hairstyle_id, notes, filename = 'sample.jpg' } = ctx.request.body;
+            const {
+                category,
+                style_label,
+                hairstyle_id,
+                notes,
+                filename = 'sample.jpg',
+            } = ctx.request.body;
 
             if (!category) return ctx.badRequest('category is required.');
 
@@ -56,7 +72,7 @@ module.exports = createCoreController(
                 return ctx.internalServerError('Failed to create training sample record.');
             }
 
-            // Enqueue a style_extraction job automatically on admin upload
+            // Enqueue a style_extraction job automatically on upload
             try {
                 await strapi.db.query('api::job.job').create({
                     data: {
@@ -73,8 +89,11 @@ module.exports = createCoreController(
                     },
                 });
             } catch (err) {
-                // Non-fatal: we still return the upload URL; extraction can be retried
-                strapi.log.error('[training-sample][create] Failed to queue extraction job:', err.message);
+                // Non-fatal — extraction can be retried manually
+                strapi.log.error(
+                    '[training-sample][create] Failed to queue extraction job:',
+                    err.message
+                );
             }
 
             return ctx.send({
@@ -91,8 +110,26 @@ module.exports = createCoreController(
         // Admin only: list samples with optional filters.
         // ─────────────────────────────────────────────────────────────────────
         async find(ctx) {
-            // In production, lock this down via Strapi RBAC — only admins.
-            const { category, status, approved, page = 1, pageSize = 50 } = ctx.query;
+            const user = ctx.state.user;
+            if (!user) return ctx.unauthorized();
+
+            // Restrict listing to admin roles only
+            const isAdminRole =
+                user.role?.type === 'administrator' ||
+                user.role?.name === 'Admin' ||
+                user.role?.name === 'Super Admin';
+
+            if (!isAdminRole) {
+                return ctx.forbidden('Only admins can list training samples.');
+            }
+
+            const {
+                category,
+                status,
+                approved,
+                page = 1,
+                pageSize = 50,
+            } = ctx.query;
 
             const where = {};
             if (category) where.category = category;
@@ -132,6 +169,18 @@ module.exports = createCoreController(
         // Admin approves a sample for LoRA fine-tuning.
         // ─────────────────────────────────────────────────────────────────────
         async approve(ctx) {
+            const user = ctx.state.user;
+            if (!user) return ctx.unauthorized();
+
+            const isAdminRole =
+                user.role?.type === 'administrator' ||
+                user.role?.name === 'Admin' ||
+                user.role?.name === 'Super Admin';
+
+            if (!isAdminRole) {
+                return ctx.forbidden('Only admins can approve training samples.');
+            }
+
             const { id } = ctx.params;
             const { approved = true } = ctx.request.body;
 

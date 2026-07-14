@@ -6,13 +6,19 @@ module.exports = {
             method: 'GET',
             path: '/hairstyles',
             handler: 'hairstyle.find',
-            config: { auth: true, policies: [] },
+            config: {
+                auth: {},
+                policies: [],
+            },
         },
         {
             method: 'GET',
             path: '/hairstyles/:slug',
             handler: 'hairstyle.findOne',
-            config: { auth: true, policies: [] },
+            config: {
+                auth: {},
+                policies: [],
+            },
         },
     ],
 };

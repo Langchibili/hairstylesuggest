@@ -6,7 +6,7 @@ module.exports = {
             method: 'POST',
             path: '/ratings',
             handler: 'generation-result.submitRating',
-            config: { auth: true, policies: [] },
+            config: { auth: {}, policies: [] },
         },
     ],
 };

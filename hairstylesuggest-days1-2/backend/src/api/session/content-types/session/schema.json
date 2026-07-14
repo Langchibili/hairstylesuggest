@@ -1,0 +1,43 @@
+{
+  "kind": "collectionType",
+  "collectionName": "sessions",
+  "info": {
+    "singularName": "session",
+    "pluralName": "sessions",
+    "displayName": "Session",
+    "description": "A user's hairstyle generation session"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "user": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "plugin::users-permissions.user"
+    },
+    "status": {
+      "type": "enumeration",
+      "enum": ["created", "uploading", "processing", "partial", "complete", "failed"],
+      "default": "created",
+      "required": true
+    },
+    "source_images": {
+      "type": "json",
+      "default": []
+    },
+    "face_analysis": {
+      "type": "json"
+    },
+    "prompt_overrides": {
+      "type": "json"
+    },
+    "total_cost_usd": {
+      "type": "decimal"
+    },
+    "completed_at": {
+      "type": "datetime"
+    }
+  }
+}

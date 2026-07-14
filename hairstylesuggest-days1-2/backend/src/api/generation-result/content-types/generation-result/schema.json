@@ -1,0 +1,52 @@
+{
+  "kind": "collectionType",
+  "collectionName": "generation_results",
+  "info": {
+    "singularName": "generation-result",
+    "pluralName": "generation-results",
+    "displayName": "Generation Result",
+    "description": "Output images from a generation job"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "session": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::session.session"
+    },
+    "hairstyle": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::hairstyle.hairstyle"
+    },
+    "render_tier": {
+      "type": "enumeration",
+      "enum": ["preview", "focus"],
+      "required": true
+    },
+    "angles": {
+      "type": "json",
+      "description": "Array of {angle, cdn_url, r2_key} objects"
+    },
+    "identity_score": {
+      "type": "decimal"
+    },
+    "generation_params": {
+      "type": "json"
+    },
+    "gpu_seconds": {
+      "type": "decimal"
+    },
+    "cost_usd": {
+      "type": "decimal"
+    },
+    "user_rating": {
+      "type": "integer",
+      "min": 1,
+      "max": 5
+    }
+  }
+}

@@ -3,11 +3,11 @@
 /**
  * Internal webhook routes.
  *
- * auth: false  — These endpoints bypass Strapi JWT authentication entirely.
- * policy: global::internal-key — validates the X-Internal-Key header instead.
+ * These endpoints bypass Strapi JWT authentication and are protected
+ * by the global::internal-key policy (X-Internal-Key header check).
  *
- * These paths intentionally start with /internal/ to make it obvious in logs
- * and to allow easy firewall rules (e.g. block /internal/* from public traffic).
+ * NOTE: File must be .js not .ts — Strapi v4 does NOT support TypeScript
+ * route files in the src/api directory by default without additional config.
  */
 module.exports = {
     routes: [
